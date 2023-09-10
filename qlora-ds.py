@@ -18,6 +18,8 @@ import importlib
 from packaging import version
 from packaging.version import parse
 
+from accelerate.utils import DistributedType
+
 import torch
 import transformers
 from torch.nn.utils.rnn import pad_sequence
