@@ -1,5 +1,5 @@
 python qlora.py \
-    --model_name_or_path /home/cjk/Llama-2-7b-hf \
+    --model_name_or_path /mnt/c/models/daryl149_llama-2-7b-chat-hf \
     --output_dir ./output/llama-2-guanaco-7b \
     --logging_steps 1 \
     --save_strategy steps \
