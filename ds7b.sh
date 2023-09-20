@@ -1,4 +1,4 @@
-deepspeed qlora.py \
+deepspeed qlora-ds.py \
     --model_name_or_path /mnt/c/models/daryl149_llama-2-7b-chat-hf \
     --output_dir ./output/llama-2-guanaco-7b \
     --logging_steps 1 \
