@@ -1,4 +1,4 @@
-deepspeed qlora-ds.py \
+python3 qlora-ds.py \
     --model_name_or_path /mnt/c/models/daryl149_llama-2-7b-chat-hf \
     --output_dir ./output/llama-2-guanaco-7b \
     --deepspeed /home/cjk/zero2.json
