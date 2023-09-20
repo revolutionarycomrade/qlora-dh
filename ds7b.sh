@@ -27,10 +27,10 @@ deepspeed qlora-ds.py \
     --target_max_len 512 \
     --gradient_accumulation_steps 16 \
     --max_steps 1875 \
-    --eval_steps 187 \
     --learning_rate 0.0002 \
     --adam_beta2 0.999 \
     --max_grad_norm 0.3 \
     --lora_dropout 0.1 \
     --weight_decay 0.0 \
     --seed 0 \
+    --ddp_find_unused_parameters False
