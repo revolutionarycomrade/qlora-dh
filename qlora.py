@@ -32,7 +32,6 @@ from transformers import (
 
 )
 from datasets import load_dataset, Dataset
-import evaluate
 
 from peft import (
     prepare_model_for_kbit_training,
@@ -387,7 +386,7 @@ class DataCollatorForCausalLM(object):
                 labels.append(torch.tensor(copy.deepcopy(tokenized_source + tokenized_target)))
         # Apply padding
         input_ids = pad_sequence(input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id)
-        labels = pad_sequence(labels, batch_first=True, padding_value=IGNORE_INDEX) if not self.predict_with_generate else None
+        labels = pad_sequence(labels, batch_first=True, padding_value=IGNORE_INDEX)
         data_dict = {
             'input_ids': input_ids,
             'attention_mask':input_ids.ne(self.tokenizer.pad_token_id),
@@ -569,9 +568,9 @@ def get_last_checkpoint(checkpoint_dir):
 
 def train():
     hfparser = transformers.HfArgumentParser((
-        ModelArguments, DataArguments, TrainingArguments, GenerationArguments
+        ModelArguments, DataArguments, TrainingArguments
     ))
-    model_args, data_args, training_args, generation_args, extra_args = \
+    model_args, data_args, training_args, extra_args = \
         hfparser.parse_args_into_dataclasses(return_remaining_strings=True)
     args = argparse.Namespace(
         **vars(model_args), **vars(data_args), **vars(training_args)
@@ -594,7 +593,7 @@ def train():
         model=model,
         tokenizer=tokenizer,
         args=training_args,
-        **{k:v for k,v in data_module.items() if k != 'predict_dataset'},
+        **{k:v for k,v in data_module.items()},
     )
 
    
