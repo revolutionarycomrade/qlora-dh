@@ -23,9 +23,9 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     set_seed,
+    Seq2SeqTrainer,
     BitsAndBytesConfig,
     LlamaTokenizer
-
 )
 from datasets import load_dataset, Dataset
 
@@ -395,13 +395,14 @@ def train():
 
     print(training_args)
     
-    trainer = transformers.Trainer(
+    trainer = Seq2SeqTrainer(
         model=model,
-        #tokenizer=tokenizer,
+        tokenizer=tokenizer,
         args=training_args,
         **{k:v for k,v in data_module.items()},
     )
 
+    trainer.add_callback(SavePeftModelCallback)
    
     # Verifying the datatypes and parameter counts before training.
     print_trainable_parameters(args, model)
