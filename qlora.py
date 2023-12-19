@@ -389,7 +389,7 @@ class DataCollatorForCausalLM(object):
         return data_dict
 
 def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
-    data_processor = VicunaDataProcessor(args.config, tokenizer)
+    data_processor = VicunaDataProcessor(args.cf, tokenizer)
     dataset = data_processor.get_data() 
 
     if args.do_train:
