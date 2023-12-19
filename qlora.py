@@ -1,41 +1,41 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
+
+from collections import defaultdict
 import copy
 import json
 import os
-import re
-import uuid
-import shutil
 from os.path import exists, join, isdir
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Sequence, Any
+import sys
+from typing import Optional, Dict, Sequence
 import numpy as np
 from tqdm import tqdm
 import logging
-import warnings
 import bitsandbytes as bnb
 import pandas as pd
 import importlib
 from packaging import version
+from packaging.version import parse
+
 import torch
 import transformers
 from torch.nn.utils.rnn import pad_sequence
 import argparse
 from transformers import (
-    AddedToken,
     AutoTokenizer,
     AutoModelForCausalLM,
     set_seed,
     Seq2SeqTrainer,
     BitsAndBytesConfig,
-    LlamaTokenizer,
+    LlamaTokenizer
+
 )
 from datasets import load_dataset, Dataset
 import evaluate
 
 from peft import (
     prepare_model_for_kbit_training,
-    AutoPeftModelForCausalLM,
     LoraConfig,
     get_peft_model,
     PeftModel
@@ -65,8 +65,9 @@ def is_ipex_available():
         )
         return False
     return True
+    
 
-if torch.cuda.is_available():
+if torch.cuda.is_available():   
     torch.backends.cuda.matmul.allow_tf32 = True
 
 logger = logging.getLogger(__name__)
@@ -77,7 +78,7 @@ DEFAULT_PAD_TOKEN = "[PAD]"
 @dataclass
 class ModelArguments:
     model_name_or_path: Optional[str] = field(
-        default="meta-llama/Llama-2-7b",
+        default="EleutherAI/pythia-12b"
     )
     trust_remote_code: Optional[bool] = field(
         default=False,
@@ -90,8 +91,8 @@ class ModelArguments:
 
 @dataclass
 class DataArguments:
-    eval_dataset_size: float = field(
-        default=0.02, metadata={"help": "Size of validation dataset."}
+    eval_dataset_size: int = field(
+        default=1024, metadata={"help": "Size of validation dataset."}
     )
     max_train_samples: Optional[int] = field(
         default=None,
@@ -107,29 +108,21 @@ class DataArguments:
             "value if set."
         },
     )
-    model_max_len: int = field(
-        default=4096,
-        metadata={"help": "Maximum model length (input and output).  Sequences will be right padded (and possibly truncated)."},
+    source_max_len: int = field(
+        default=1024,
+        metadata={"help": "Maximum source sequence length. Sequences will be right padded (and possibly truncated)."},
     )
-    skip_excess_length: bool = field(
-        default=True,
-        metadata={"help": "Purge dataset items that exceed model_max_len"}
+    target_max_len: int = field(
+        default=256,
+        metadata={"help": "Maximum target sequence length. Sequences will be right padded (and possibly truncated)."},
     )
     dataset: str = field(
-        default='instructions.jsonl',
+        default='alpaca',
         metadata={"help": "Which dataset to finetune on. See datamodule for options."}
     )
     dataset_format: Optional[str] = field(
-        default='airoboros',
-        metadata={"help": "Which dataset format is used. [alpaca|chip2|self-instruct|hh-rlhf|airoboros]"}
-    )
-    expand_conversations: bool = field(
-        default=False,
-        metadata={"help": "Expand all multi-turn conversations, use with care"},
-    )
-    include_sources: Optional[str] = field(
-        default="ALL",
-        metadata={"help": "Comma separated list of sources to include (source field in dataset)"}
+        default=None,
+        metadata={"help": "Which dataset format is used. [alpaca|chip2|self-instruct|hh-rlhf]"}
     )
 
 @dataclass
@@ -201,21 +194,13 @@ class TrainingArguments(transformers.Seq2SeqTrainingArguments):
         default='none',
         metadata={"help": "To use wandb or something else for reporting."}
     )
-    use_fast_tokenizer: bool = field(default=False, metadata={"help": "Use fast tokenizer"})
-    pad_token: str = field(default=None, metadata={"help": "Custom pad token, e.g. for qwen"})
-    eos_token: str = field(default=None, metadata={"help": "Custom EOS token, e.g. for qwen"})
-    bos_token: str = field(default=None, metadata={"help": "Custom BOS token, e.g. for qwen"})
-    unk_token: str = field(default=None, metadata={"help": "Custom UNK token, e.g. for qwen"})
-    padding_side: str = field(default="right", metadata={"help": "tokenizer padding side"})
-    final_output_dir: str = field(default='./final', metadata={"help": 'The final output directory, for completed model'})
-    output_dir: str = field(default='./output', metadata={"help": 'The output (and intermediate) directory.'})
+    output_dir: str = field(default='./output', metadata={"help": 'The output dir for logs and checkpoints'})
     optim: str = field(default='paged_adamw_32bit', metadata={"help": 'The optimizer to be used'})
     per_device_train_batch_size: int = field(default=1, metadata={"help": 'The training batch size per GPU. Increase for better speed.'})
-    per_device_eval_batch_size: int = field(default=1, metadata={"help": 'The eval batch size per GPU. Increase for better speed.'})
     gradient_accumulation_steps: int = field(default=16, metadata={"help": 'How many gradients to accumulate before to perform an optimizer step'})
-    num_train_epochs: int = field(default=3, metadata={"help": 'Number of training epochs.'})
+    max_steps: int = field(default=10000, metadata={"help": 'How many optimizer update steps to take'})
     weight_decay: float = field(default=0.0, metadata={"help": 'The L2 weight decay rate of AdamW'}) # use lora dropout instead for regularization if needed
-    learning_rate: float = field(default=0.0002, metadata={"help": 'The learning rate'})
+    learning_rate: float = field(default=0.0002, metadata={"help": 'The learnign rate'})
     remove_unused_columns: bool = field(default=False, metadata={"help": 'Removed unused columns. Needed to make this codebase work.'})
     max_grad_norm: float = field(default=0.3, metadata={"help": 'Gradient clipping max norm. This is tuned and works well for all models tested.'})
     gradient_checkpointing: bool = field(default=True, metadata={"help": 'Use gradient checkpointing. You want to use this.'})
@@ -223,15 +208,10 @@ class TrainingArguments(transformers.Seq2SeqTrainingArguments):
     lr_scheduler_type: str = field(default='constant', metadata={"help": 'Learning rate schedule. Constant a bit better than cosine, and has advantage for analysis'})
     warmup_ratio: float = field(default=0.03, metadata={"help": 'Fraction of steps to do a warmup for'})
     logging_steps: int = field(default=10, metadata={"help": 'The frequency of update steps after which to log the loss'})
-    group_by_length: bool = field(default=False, metadata={"help": 'Group sequences into batches with same length. Saves memory and speeds up training considerably.'})
+    group_by_length: bool = field(default=True, metadata={"help": 'Group sequences into batches with same length. Saves memory and speeds up training considerably.'})
     save_strategy: str = field(default='steps', metadata={"help": 'When to save checkpoints'})
     save_steps: int = field(default=250, metadata={"help": 'How often to save a model'})
     save_total_limit: int = field(default=40, metadata={"help": 'How many checkpoints to save before the oldest is overwritten'})
-    deepspeed: str = field(default=None, metadata={"help": "deepspeed configuration path"})
-    max_shard_size: str = field(default="5GB", metadata={"help": "Max shard size when saving model after full finetune."})
-    save_quantized_base: bool = field(default=False, metadata={"help": "Optionally save the quantized base model"})
-    use_flash_attention_2: bool = field(default=False, metadata={"help": "Use flash attention 2 (native HF method)"})
-    neftune_noise_alpha: int = field(default=5, metadata={"help": "NEFTune noise alpha value"})
 
 @dataclass
 class GenerationArguments:
@@ -256,7 +236,7 @@ class GenerationArguments:
     use_cache: Optional[bool] = field(default=True)
 
     # Hyperparameters for logit manipulation
-    temperature: Optional[float] = field(default=0.7)
+    temperature: Optional[float] = field(default=1.0)
     top_k: Optional[int] = field(default=50)
     top_p: Optional[float] = field(default=1.0)
     typical_p: Optional[float] = field(default=1.0)
@@ -272,40 +252,27 @@ def find_all_linear_names(args, model):
         if isinstance(module, cls):
             names = name.split('.')
             lora_module_names.add(names[0] if len(names) == 1 else names[-1])
+
+
     if 'lm_head' in lora_module_names: # needed for 16-bit
         lora_module_names.remove('lm_head')
     return list(lora_module_names)
 
 
 class SavePeftModelCallback(transformers.TrainerCallback):
-    def __init__(self, trainer, **_):
-        self.trainer = trainer
-
-
     def save_model(self, args, state, kwargs):
         print('Saving PEFT checkpoint...')
-        checkpoint_folder = os.path.join(args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{state.global_step}")
-        peft_model_path = os.path.join(checkpoint_folder, "adapter_model")
-
-        if getattr(self.trainer, "deepspeed"):
-            self.trainer.accelerator.wait_for_everyone()
-            state_dict = self.trainer.accelerator.get_state_dict(self.trainer.deepspeed)
-            unwrapped_model = self.trainer.accelerator.unwrap_model(self.trainer.deepspeed)
-            if self.trainer.accelerator.is_main_process:
-                unwrapped_model.save_pretrained(peft_model_path, state_dict=state_dict, safe_serialization=True)
-            self.trainer.accelerator.wait_for_everyone()
+        if state.best_model_checkpoint is not None:
+            checkpoint_folder = os.path.join(state.best_model_checkpoint, "adapter_model")
         else:
-            kwargs["model"].save_pretrained(peft_model_path, safe_serialization=True)
+            checkpoint_folder = os.path.join(args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{state.global_step}")
+
+        peft_model_path = os.path.join(checkpoint_folder, "adapter_model")
+        kwargs["model"].save_pretrained(peft_model_path)
 
         pytorch_model_path = os.path.join(checkpoint_folder, "pytorch_model.bin")
         if os.path.exists(pytorch_model_path):
             os.remove(pytorch_model_path)
-        try:
-            if os.path.exists(os.path.join(checkpoint_folder, f'global_step{state.global_step}')):
-                print(f'Cleaning up global_step{state.global_step}')
-                shutil.rmtree(os.path.join(checkpoint_folder, f'global_step{state.global_step}'))
-        except Exception as exc:
-            print(f'Failed to clean up global_step{state.global_step}: {exc}')
 
     def on_save(self, args, state, control, **kwargs):
         self.save_model(args, state, kwargs)
@@ -315,8 +282,9 @@ class SavePeftModelCallback(transformers.TrainerCallback):
         def touch(fname, times=None):
             with open(fname, 'a'):
                 os.utime(fname, times)
-        self.save_model(args, state, kwargs)
+
         touch(join(args.output_dir, 'completed'))
+        self.save_model(args, state, kwargs)
 
 def get_accelerate_model(args, checkpoint_dir):
 
@@ -324,7 +292,7 @@ def get_accelerate_model(args, checkpoint_dir):
         n_gpus = torch.cuda.device_count()
     if is_ipex_available() and torch.xpu.is_available():
         n_gpus = torch.xpu.device_count()
-
+        
     max_memory = f'{args.max_memory_MB}MB'
     max_memory = {i: max_memory for i in range(n_gpus)}
     device_map = "auto"
@@ -335,41 +303,19 @@ def get_accelerate_model(args, checkpoint_dir):
         device_map = {'': local_rank}
         max_memory = {'': max_memory[local_rank]}
 
-    if args.full_finetune:
-        assert args.bits in [16, 32]
 
-    # Tokenizer...
-    extra_tokens = {}
-    for key in ("pad_token", "eos_token", "bos_token", "unk_token"):
-        value = getattr(args, key, None)
-        if value:
-            extra_tokens[key] = value
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.model_name_or_path,
-        cache_dir=args.cache_dir,
-        use_fast=args.use_fast_tokenizer,
-        padding_side=args.padding_side,
-        tokenizer_type='llama' if 'llama' in args.model_name_or_path else None, # Needed for HF name change
-        trust_remote_code=args.trust_remote_code,
-        **extra_tokens,
-    )
-    if not tokenizer.pad_token_id:
-        tokenizer.pad_token_id = tokenizer.unk_token_id
-        tokenizer.pad_token = tokenizer.unk_token
+    if args.full_finetune: assert args.bits in [16, 32]
 
-    # Ensure the model has the correct token IDs (qwen!!!)
-    tokenizer_kwargs = {}
-    for key in ("pad_token", "eos_token", "bos_token", "unk_token"):
-        value = getattr(args, key, None)
-        if value:
-            tokenizer_kwargs[f"{key}_id"] = getattr(tokenizer, f"{key}_id")
-
-    # Model...
     print(f'loading base model {args.model_name_or_path}...')
     compute_dtype = (torch.float16 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32))
-    bnb_config = None
-    if not args.full_finetune and args.bits in (4, 8):
-        bnb_config = BitsAndBytesConfig(
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_name_or_path,
+        cache_dir=args.cache_dir,
+        load_in_4bit=args.bits == 4,
+        load_in_8bit=args.bits == 8,
+        device_map=device_map,
+        max_memory=max_memory,
+        quantization_config=BitsAndBytesConfig(
             load_in_4bit=args.bits == 4,
             load_in_8bit=args.bits == 8,
             llm_int8_threshold=6.0,
@@ -377,26 +323,17 @@ def get_accelerate_model(args, checkpoint_dir):
             bnb_4bit_compute_dtype=compute_dtype,
             bnb_4bit_use_double_quant=args.double_quant,
             bnb_4bit_quant_type=args.quant_type,
-        )
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_name_or_path,
-        cache_dir=args.cache_dir,
-        load_in_4bit=args.bits == 4,
-        load_in_8bit=args.bits == 8,
-        device_map=device_map if not args.deepspeed else None,
-        max_memory=max_memory if not args.deepspeed else None,
-        quantization_config=bnb_config,
+        ),
         torch_dtype=(torch.float32 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32)),
         trust_remote_code=args.trust_remote_code,
-        use_flash_attention_2=args.use_flash_attention_2,
-        **tokenizer_kwargs,
+        use_auth_token=args.use_auth_token
     )
     if compute_dtype == torch.float16 and args.bits == 4:
         if torch.cuda.is_bf16_supported():
             print('='*80)
             print('Your GPU supports bfloat16, you can accelerate training with the argument --bf16')
             print('='*80)
-
+            
     if compute_dtype == torch.float16 and (is_ipex_available() and torch.xpu.is_available()):
         compute_dtype = torch.bfloat16
         print('Intel XPU does not support float16 yet, so switching to bfloat16')
@@ -406,35 +343,38 @@ def get_accelerate_model(args, checkpoint_dir):
 
     model.config.torch_dtype=(torch.float32 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32))
 
-    # Resize token embeddings, if necessary, to accomodate fast tokenizer with added tokens.
-    num_new_tokens = len(tokenizer) - len(model.get_input_embeddings().weight.data)
-    if num_new_tokens > 0:
-        input_embeddings_data = model.get_input_embeddings().weight.data
-        output_embeddings_data = model.get_output_embeddings().weight.data
-
-        input_embeddings_avg = input_embeddings_data[:-num_new_tokens].mean(dim=0, keepdim=True)
-        output_embeddings_avg = output_embeddings_data[:-num_new_tokens].mean(dim=0, keepdim=True)
-
-        input_embeddings_data[-num_new_tokens:] = input_embeddings_avg
-        output_embeddings_data[-num_new_tokens:] = output_embeddings_avg
-        model.resize_token_embeddings(len(tokenizer))
-
-    if not args.full_finetune and args.bits in (8, 4):
+    # Tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model_name_or_path,
+        cache_dir=args.cache_dir,
+        padding_side="right",
+        use_fast=False, # Fast tokenizer giving issues.
+        tokenizer_type='llama' if 'llama' in args.model_name_or_path else None, # Needed for HF name change
+        trust_remote_code=args.trust_remote_code,
+        use_auth_token=args.use_auth_token,
+    )
+    if tokenizer._pad_token is None:
+        smart_tokenizer_and_embedding_resize(
+            special_tokens_dict=dict(pad_token=DEFAULT_PAD_TOKEN),
+            tokenizer=tokenizer,
+            model=model,
+        )
+    if 'llama' in args.model_name_or_path or isinstance(tokenizer, LlamaTokenizer):
+        # LLaMA tokenizer may not have correct special tokens set.
+        # Check and add them if missing to prevent them from being parsed into different tokens.
+        # Note that these are present in the vocabulary.
+        # Note also that `model.config.pad_token_id` is 0 which corresponds to `<unk>` token.
+        print('Adding special tokens.')
+        tokenizer.add_special_tokens({
+                "eos_token": tokenizer.convert_ids_to_tokens(model.config.eos_token_id),
+                "bos_token": tokenizer.convert_ids_to_tokens(model.config.bos_token_id),
+                "unk_token": tokenizer.convert_ids_to_tokens(
+                    model.config.pad_token_id if model.config.pad_token_id != -1 else tokenizer.pad_token_id
+                ),
+        })
+    
+    if not args.full_finetune:
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=args.gradient_checkpointing)
-
-    if args.gradient_checkpointing and hasattr(model, 'gradient_checkpointing_enable'):
-        model.gradient_checkpointing_enable()
-
-    for name, module in model.named_modules():
-        if isinstance(module, LoraLayer):
-            if args.bf16:
-                module = module.to(torch.bfloat16)
-        if 'norm' in name:
-            module = module.to(torch.bfloat16 if args.bf16 else torch.float32)
-        if 'lm_head' in name or 'embed_tokens' in name:
-            if hasattr(module, 'weight'):
-                if args.bf16 and module.weight.dtype == torch.float32:
-                    module = module.to(torch.bfloat16)
 
     if not args.full_finetune:
         if checkpoint_dir is not None:
@@ -451,9 +391,18 @@ def get_accelerate_model(args, checkpoint_dir):
                 bias="none",
                 task_type="CAUSAL_LM",
             )
-            model.enable_input_require_grads()
             model = get_peft_model(model, config)
 
+    for name, module in model.named_modules():
+        if isinstance(module, LoraLayer):
+            if args.bf16:
+                module = module.to(torch.bfloat16)
+        if 'norm' in name:
+            module = module.to(torch.float32)
+        if 'lm_head' in name or 'embed_tokens' in name:
+            if hasattr(module, 'weight'):
+                if args.bf16 and module.weight.dtype == torch.float32:
+                    module = module.to(torch.bfloat16)
     return model, tokenizer
 
 def print_trainable_parameters(args, model):
@@ -473,27 +422,50 @@ def print_trainable_parameters(args, model):
         f"trainable: {100 * trainable_params / all_param}"
     )
 
+def smart_tokenizer_and_embedding_resize(
+    special_tokens_dict: Dict,
+    tokenizer: transformers.PreTrainedTokenizer,
+    model: transformers.PreTrainedModel,
+):
+    """Resize tokenizer and embedding.
+
+    Note: This is the unoptimized version that may make your embedding size not be divisible by 64.
+    """
+    num_new_tokens = tokenizer.add_special_tokens(special_tokens_dict)
+    model.resize_token_embeddings(len(tokenizer))
+    
+    if num_new_tokens > 0:
+        input_embeddings_data = model.get_input_embeddings().weight.data
+        output_embeddings_data = model.get_output_embeddings().weight.data
+
+        input_embeddings_avg = input_embeddings_data[:-num_new_tokens].mean(dim=0, keepdim=True)
+        output_embeddings_avg = output_embeddings_data[:-num_new_tokens].mean(dim=0, keepdim=True)
+
+        input_embeddings_data[-num_new_tokens:] = input_embeddings_avg
+        output_embeddings_data[-num_new_tokens:] = output_embeddings_avg
+
 @dataclass
 class DataCollatorForCausalLM(object):
     tokenizer: transformers.PreTrainedTokenizer
-    model_max_len: int
+    source_max_len: int
+    target_max_len: int
     train_on_source: bool
     predict_with_generate: bool
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         # Extract elements
-        sources = [example['input'] for example in instances]
-        targets = [example['output'] for example in instances]
+        sources = [f"{self.tokenizer.bos_token}{example['input']}" for example in instances]
+        targets = [f"{example['output']}{self.tokenizer.eos_token}" for example in instances]
         # Tokenize
         tokenized_sources_with_prompt = self.tokenizer(
             sources,
-            max_length=self.model_max_len,
+            max_length=self.source_max_len,
             truncation=True,
-            add_special_tokens=True,
+            add_special_tokens=False,
         )
         tokenized_targets = self.tokenizer(
             targets,
-            max_length=self.model_max_len,
+            max_length=self.target_max_len,
             truncation=True,
             add_special_tokens=False,
         )
@@ -504,35 +476,14 @@ class DataCollatorForCausalLM(object):
             tokenized_sources_with_prompt['input_ids'],
             tokenized_targets['input_ids']
         ):
-            truncated_target = False
-            if len(tokenized_source) + len(tokenized_target) >= self.model_max_len:
-                if len(tokenized_source) <= 512:
-                    tokenized_target = tokenized_target[0:self.model_max_len - len(tokenized_source)]
-                    truncated_target = True
-                elif len(tokenized_target) <= 512:
-                    tokenized_source = tokenized_source[0:self.model_max_len - len(tokenized_target)]
-                else:
-                    tokenized_source = tokenized_source[0:int(self.model_max_len / 2)]
-                    tokenized_target = tokenized_target[0:int(self.model_max_len / 2)]
-                    truncated_target = True
-
             if not self.predict_with_generate:
-                target_inputs = tokenized_source + tokenized_target
-                if not truncated_target:
-                    target_inputs.append(self.tokenizer.eos_token_id)
-                input_ids.append(torch.tensor(target_inputs))
+                input_ids.append(torch.tensor(tokenized_source + tokenized_target))
                 if not self.train_on_source:
-                    target_labels = copy.deepcopy(tokenized_target)
-                    if not truncated_target:
-                        target_labels.append(self.tokenizer.eos_token_id)
                     labels.append(
-                        torch.tensor([IGNORE_INDEX for _ in range(len(tokenized_source))] + target_labels)
+                        torch.tensor([IGNORE_INDEX for _ in range(len(tokenized_source))] + copy.deepcopy(tokenized_target))
                     )
                 else:
-                    if not truncated_target:
-                        labels.append(torch.tensor(copy.deepcopy(tokenized_source + tokenized_target + [self.tokenizer.eos_token_id])))
-                    else:
-                        labels.append(torch.tensor(copy.deepcopy(tokenized_source + tokenized_target)))
+                    labels.append(torch.tensor(copy.deepcopy(tokenized_source + tokenized_target)))
             else:
                 input_ids.append(torch.tensor(tokenized_source))
         # Apply padding
@@ -540,7 +491,7 @@ class DataCollatorForCausalLM(object):
         labels = pad_sequence(labels, batch_first=True, padding_value=IGNORE_INDEX) if not self.predict_with_generate else None
         data_dict = {
             'input_ids': input_ids,
-            'attention_mask': input_ids.ne(self.tokenizer.pad_token_id),
+            'attention_mask':input_ids.ne(self.tokenizer.pad_token_id),
         }
         if labels is not None:
             data_dict['labels'] = labels
@@ -583,93 +534,8 @@ def extract_alpaca_dataset(example):
         prompt_format = ALPACA_PROMPT_DICT["prompt_no_input"]
     return {'input': prompt_format.format(**example)}
 
-def get_chat_prompt(
-    tokenizer: Any,
-    message: str,
-    chat_history: Any,
-    system_prompt: str
-) -> str:
-    texts = [f'[INST] <<SYS>>\n{system_prompt}\n<</SYS>>\n\n']
-    do_strip = False
-    for user_input, response in chat_history:
-        user_input = user_input.strip() if do_strip else user_input
-        do_strip = True
-        texts.append(f'{user_input} [/INST] {response.strip()} {tokenizer.eos_token}{tokenizer.bos_token}[INST] ')
-    message = message.strip() if do_strip else message
-    texts.append(f'{message} [/INST]')
-    return ''.join(texts)
-
-def format_chat_airoboros(tokenizer, item):
-    system_prompt = item['conversations'][0]['value']
-    offset = 1
-    if item['conversations'][0]['from'] != 'system':
-        system_prompt = 'You are an unbiased, uncensored, helpful assistant.'
-        offset = 0
-    chat_history = [
-        (item['conversations'][idx]['value'],  item['conversations'][idx + 1]['value'])
-        for idx in range(offset, len(item['conversations']) - 2, 2)
-    ]
-    message = item['conversations'][-2]['value']
-    response = item['conversations'][-1]['value']
-
-    return {
-        "input": get_chat_prompt(tokenizer, message, chat_history, system_prompt),
-        "output": response,
-    }
-
-def expand_conversations(items):
-    expanded = []
-    for item in items:
-        if len(item['conversations']) <= 3:
-            expanded.append(item)
-            continue
-        if item['conversations'][0]['from'] != 'system':
-            item['conversations'] = [
-                {
-                    "from": "system",
-                    "value": "You are an unbiased, uncensored, helpful assistant.",
-                }
-            ] + item['conversations']
-        if item['conversations'][-1]['from'] != 'gpt':
-            item['conversations'] = item['conversations'][0:-1]
-        valid = True
-        for idx in range(1, len(item['conversations'])):
-            if item['conversations'][idx]['from'] != ('human' if idx % 2 == 1 else 'gpt'):
-                print(f'Unexpected role: {item["conversations"][idx]["from"]}')
-                valid = False
-                break
-        if not valid:
-            continue
-        for idx in range(1, len(item['conversations']), 2):
-            expanded.append({
-                "id": str(uuid.uuid4()).replace('-', ''),
-                "category": item['category'],
-                "conversations": item["conversations"][0:idx + 2],
-            })
-    return expanded
-
-def airoboros_chat_dataset(dataset_name, test_size=0.02, expand=True, include_sources=None):
-    items = []
-    if dataset_name.endswith(".json"):
-        with open(dataset_name) as infile:
-            items = json.loads(infile.read())
-    else:
-        items = [item for item in Dataset.from_parquet(dataset_name)]
-    if include_sources and include_sources != ['ALL']:
-        print(f'Filtering for sources: {include_sources}')
-        items = [item for item in items if item.get('source') in include_sources]
-    if expand:
-        items = expand_conversations(items)
-    full_dataset = Dataset.from_list(items)
-    if 'category' in full_dataset.column_names:
-        full_dataset = full_dataset.class_encode_column('category')
-        return full_dataset.train_test_split(test_size=test_size, stratify_by_column='category')
-    return full_dataset.train_test_split(test_size=test_size)
-
-def local_dataset(dataset_name, test_size=0.02, include_sources=None):
-    if dataset_name.endswith('.parquet'):
-        full_dataset = Dataset.from_parquet(path_or_paths=dataset_name)
-    elif dataset_name.endswith('.json') or dataset_name.endswith('.jsonl'):
+def local_dataset(dataset_name):
+    if dataset_name.endswith('.json') or dataset_name.endswith('.jsonl'):
         full_dataset = Dataset.from_json(path_or_paths=dataset_name)
     elif dataset_name.endswith('.csv'):
         full_dataset = Dataset.from_pandas(pd.read_csv(dataset_name))
@@ -677,19 +543,9 @@ def local_dataset(dataset_name, test_size=0.02, include_sources=None):
         full_dataset = Dataset.from_pandas(pd.read_csv(dataset_name, delimiter='\t'))
     else:
         raise ValueError(f"Unsupported dataset format: {dataset_name}")
-    if include_sources and include_sources != ['ALL']:
-        print(f'Filtering for sources: {include_sources}')
-        full_dataset = full_datasets.filter(lambda x: x['source'] in include_sources)
-    if 'category' in full_dataset.column_names:
-        full_dataset = full_dataset.class_encode_column('category')
-        return full_dataset.train_test_split(test_size=test_size, stratify_by_column='category')
-    elif 'source' in full_dataset.column_names:
-        try:
-            full_dataset = full_dataset.class_encode_column('source')
-        except:
-            ...
-        return full_dataset.train_test_split(test_size=test_size, stratify_by_column='source')
-    return full_dataset.train_test_split(test_size=test_size)
+
+    split_dataset = full_dataset.train_test_split(test_size=0.1)
+    return split_dataset
 
 def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
     """
@@ -736,16 +592,7 @@ def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
             if os.path.exists(dataset_name):
                 try:
                     args.dataset_format = args.dataset_format if args.dataset_format else "input-output"
-                    full_dataset = (
-                        airoboros_chat_dataset(
-                            dataset_name,
-                            args.eval_dataset_size,
-                            args.expand_conversations,
-                            args.include_sources.split(','),
-                        )
-                        if args.dataset_format == 'airoboros_chat'
-                        else local_dataset(dataset_name, args.eval_dataset_size, include_sources=args.include_sources.split(','))
-                    )
+                    full_dataset = local_dataset(dataset_name)
                     return full_dataset
                 except:
                     raise ValueError(f"Error loading dataset from {dataset_name}")
@@ -776,27 +623,6 @@ def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
                 'input': '',
                 'output': x['text'],
             })
-        elif dataset_format == 'airoboros':
-            def _format_airoboros(instruction):
-                in_ = None
-                if instruction.get("skip_prompt_formatting"):
-                    in_ = instruction["instruction"].strip() + "\n"
-                else:
-                    in_ = "\n".join([
-                        (instruction.get('system') or 'A chat.').strip(),
-                        f"USER: {instruction['instruction'].strip()}",
-                    ])
-                    if in_.endswith("PLAINFORMAT"):
-                        in_ = re.sub(r"\s+PLAINFORMAT$", "", in_, re.DOTALL)
-                        in_ += " PLAINFORMAT"
-                    in_ = "\n".join([in_.strip(), "ASSISTANT: "])
-                return {
-                    'input': in_,
-                    'output': instruction['response'].strip() + "\n",
-                }
-            dataset = dataset.map(_format_airoboros)
-        elif dataset_format == 'airoboros_chat':
-            dataset = dataset.map(lambda x: format_chat_airoboros(tokenizer, x))
         elif dataset_format == 'input-output':
             # leave as is
             pass
@@ -806,7 +632,7 @@ def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
         )
         return dataset
 
-    # Load dataset.
+     # Load dataset.
     dataset = load_data(args.dataset)
     dataset = format_dataset(dataset, args.dataset_format)
 
@@ -814,19 +640,11 @@ def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
     if args.do_eval or args.do_predict:
         if 'eval' in dataset:
             eval_dataset = dataset['eval']
-        elif 'test' in dataset:
-            eval_dataset = dataset['test']
         else:
             print('Splitting train dataset in train and validation according to `eval_dataset_size`')
-            if 'category' in dataset["train"].column_names:
-                dataset["train"] = dataset["train"].class_encode_column('category')
-                dataset = dataset["train"].train_test_split(
-                    test_size=args.eval_dataset_size, stratify_by_column='category', seed=args.seed
-                )
-            else:
-                dataset = dataset["train"].train_test_split(
-                    test_size=args.eval_dataset_size, shuffle=True, seed=args.seed
-                )
+            dataset = dataset["train"].train_test_split(
+                test_size=args.eval_dataset_size, shuffle=True, seed=42
+            )
             eval_dataset = dataset['test']
         if args.max_eval_samples is not None and len(eval_dataset) > args.max_eval_samples:
             eval_dataset = eval_dataset.select(range(args.max_eval_samples))
@@ -839,25 +657,10 @@ def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
         if args.group_by_length:
             train_dataset = train_dataset.map(lambda x: {'length': len(x['input']) + len(x['output'])})
 
-    # Remove any training data that exceeds the max length.
-    if args.skip_excess_length:
-        def _get_data_length(item):
-            prompt = f"{tokenizer.bos_token}{item['input']}{item['output']}{tokenizer.eos_token}"
-            return len(
-                tokenizer(
-                    prompt,
-                    max_length=args.model_max_len + 1,
-                    truncation=True,
-                    add_special_tokens=False
-                ).input_ids
-            )
-        train_dataset = train_dataset.filter(
-            lambda x: _get_data_length(x) < args.model_max_len - 10
-        )
-
     data_collator = DataCollatorForCausalLM(
         tokenizer=tokenizer,
-        model_max_len=args.model_max_len,
+        source_max_len=args.source_max_len,
+        target_max_len=args.target_max_len,
         train_on_source=args.train_on_source,
         predict_with_generate=args.predict_with_generate,
     )
@@ -893,7 +696,7 @@ def train():
         **vars(model_args), **vars(data_args), **vars(training_args)
     )
     print(args)
-
+    
     checkpoint_dir, completed_training = get_last_checkpoint(args.output_dir)
     if completed_training:
         print('Detected that training was already completed!')
@@ -905,8 +708,7 @@ def train():
     set_seed(args.seed)
 
     data_module = make_data_module(tokenizer=tokenizer, args=args)
-
-    training_args.neftune_noise_alpha = args.neftune_noise_alpha
+    
     trainer = Seq2SeqTrainer(
         model=model,
         tokenizer=tokenizer,
@@ -916,7 +718,7 @@ def train():
 
     # Callbacks
     if not args.full_finetune:
-        trainer.add_callback(SavePeftModelCallback(trainer))
+        trainer.add_callback(SavePeftModelCallback)
     if args.do_mmlu_eval:
         if args.mmlu_dataset == 'mmlu-zs':
             mmlu_dataset = load_dataset("json", data_files={
@@ -941,12 +743,11 @@ def train():
             tokenizer("D", add_special_tokens=False).input_ids[0],
         ]
         accuracy = evaluate.load("accuracy")
-
         class MMLUEvalCallback(transformers.TrainerCallback):
             def on_evaluate(self, args, state, control, model, **kwargs):
                 data_loader = trainer.get_eval_dataloader(mmlu_dataset)
-                model_max_len = trainer.data_collator.model_max_len
-                trainer.data_collator.model_max_len = args.mmlu_source_max_len
+                source_max_len = trainer.data_collator.source_max_len
+                trainer.data_collator.source_max_len = args.mmlu_source_max_len
                 trainer.model.eval()
                 preds, refs = [], []
                 loss_mmlu = 0
@@ -977,23 +778,21 @@ def train():
                     subject_scores.append(subject_score)
                 results[f'mmlu_{args.mmlu_split}_accuracy'] = np.mean(subject_scores)
                 trainer.log(results)
-                trainer.data_collator.model_max_len = model_max_len
+                trainer.data_collator.source_max_len = source_max_len
 
         trainer.add_callback(MMLUEvalCallback)
 
     # Verifying the datatypes and parameter counts before training.
-    if not args.deepspeed:
-        print_trainable_parameters(args, model)
-    if not args.full_finetune:
-        dtypes = {}
-        for _, p in model.named_parameters():
-            dtype = p.dtype
-            if dtype not in dtypes: dtypes[dtype] = 0
-            dtypes[dtype] += p.numel()
-        total = 0
-        for k, v in dtypes.items(): total += v
-        for k, v in dtypes.items():
-            print(k, v, v/total)
+    print_trainable_parameters(args, model)
+    dtypes = {}
+    for _, p in model.named_parameters():
+        dtype = p.dtype
+        if dtype not in dtypes: dtypes[dtype] = 0
+        dtypes[dtype] += p.numel()
+    total = 0
+    for k, v in dtypes.items(): total+= v
+    for k, v in dtypes.items():
+        print(k, v, v/total)
 
     all_metrics = {"run_name": args.run_name}
     # Training
@@ -1024,7 +823,6 @@ def train():
         predictions = tokenizer.batch_decode(
             predictions, skip_special_tokens=True, clean_up_tokenization_spaces=True
         )
-        os.makedirs(args.output_dir, exist_ok=True)
         with open(os.path.join(args.output_dir, 'predictions.jsonl'), 'w') as fout:
             for i, example in enumerate(data_module['predict_dataset']):
                 example['prediction_with_input'] = predictions[i].strip()
@@ -1036,38 +834,8 @@ def train():
         all_metrics.update(prediction_metrics)
 
     if (args.do_train or args.do_eval or args.do_predict):
-        os.makedirs(args.output_dir, exist_ok=True)
         with open(os.path.join(args.output_dir, "metrics.json"), "w") as fout:
             fout.write(json.dumps(all_metrics))
-
-    # Safely save final full-tune model.
-    if args.full_finetune:
-        trainer.accelerator.wait_for_everyone()
-        state_dict = trainer.accelerator.get_state_dict(trainer.deepspeed)
-        unwrapped_model = trainer.accelerator.unwrap_model(trainer.deepspeed)
-        if trainer.accelerator.is_main_process:
-            unwrapped_model.save_pretrained(args.final_output_dir, state_dict=state_dict, max_shard_size=args.max_shard_size)
-            with open(os.path.join(args.final_output_dir, "config.json")) as infile:
-                config = json.loads(infile.read())
-            config["_name_or_path"] = os.path.basename(args.final_output_dir)
-            with open(os.path.join(args.final_output_dir, "config.json"), "w") as outfile:
-                outfile.write(json.dumps(config, indent=2))
-            tokenizer.save_pretrained(args.final_output_dir)
-        trainer.accelerator.wait_for_everyone()
-    else:
-        if args.deepspeed:
-            trainer.accelerator.wait_for_everyone()
-            state_dict = trainer.accelerator.get_state_dict(trainer.deepspeed)
-            unwrapped_model = trainer.accelerator.unwrap_model(trainer.deepspeed)
-            if trainer.accelerator.is_main_process:
-                unwrapped_model.save_pretrained(args.final_output_dir, safe_serialization=True, state_dict=state_dict)
-            trainer.accelerator.wait_for_everyone()
-        else:
-            trainer.accelerator.wait_for_everyone()
-            if trainer.accelerator.is_main_process:
-                trainer.model.save_pretrained(args.final_output_dir, safe_serialization=True)
-            trainer.accelerator.wait_for_everyone()
-
 
 if __name__ == "__main__":
     train()
