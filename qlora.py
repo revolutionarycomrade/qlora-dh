@@ -344,17 +344,10 @@ def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
     data_processor = VicunaDataProcessor(config, tokenizer)
     dataset = data_processor.get_data() 
 
-    if args.do_train:
-        train_dataset = dataset['train']
-        if args.max_train_samples is not None and len(train_dataset) > args.max_train_samples:
-            train_dataset = train_dataset.select(range(args.max_train_samples))
-        #if args.group_by_length:
-        #    train_dataset = train_dataset.map(lambda x: {'length': len(x['input']) + len(x['output'])})
-
     data_collator = transformers.DataCollatorForLanguageModeling(tokenizer, mlm=False)
     
     return dict(
-        train_dataset=train_dataset if args.do_train else None,
+        train_dataset=train_dataset,
         data_collator=data_collator
     )
 
