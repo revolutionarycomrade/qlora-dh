@@ -23,7 +23,6 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     set_seed,
-    Seq2SeqTrainer,
     BitsAndBytesConfig,
     LlamaTokenizer
 
