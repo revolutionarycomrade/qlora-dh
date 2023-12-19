@@ -394,7 +394,7 @@ def train():
     
     trainer = transformers.Trainer(
         model=model,
-        tokenizer=tokenizer,
+        #tokenizer=tokenizer,
         args=training_args,
         **{k:v for k,v in data_module.items()},
     )
