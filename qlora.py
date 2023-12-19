@@ -345,10 +345,7 @@ def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
 
     data_collator = transformers.DataCollatorForLanguageModeling(tokenizer, mlm=False)
 
-    print(dataset["train"])
-    for i in range(len(dataset["train"])):
-        if 'conversations' in dataset["train"][i]:
-            del dataset["train"][i]['conversations']
+    dataset["train"] = dataset["train"].remove_columns("conversations")
 
     print("Final training data:")
     for i in range(5):
