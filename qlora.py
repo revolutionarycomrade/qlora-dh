@@ -396,7 +396,7 @@ def train():
         model=model,
         tokenizer=tokenizer,
         args=training_args,
-        **{k:v for k,v in data_module.items()},
+        data_module #**{k:v for k,v in data_module.items()},
     )
 
    
