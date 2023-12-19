@@ -348,7 +348,7 @@ def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
 
     print("Final training data:")
     for i in range(5):
-        print(data["train"][i])
+        print(dataset["train"][i])
     
     return dict(
         train_dataset=dataset["train"],
