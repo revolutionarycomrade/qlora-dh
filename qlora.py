@@ -1,6 +1,3 @@
-# This source code is licensed under the MIT license found in the
-# LICENSE file in the root directory of this source tree.
-
 from collections import defaultdict
 import copy
 import json
@@ -339,55 +336,6 @@ def smart_tokenizer_and_embedding_resize(
         input_embeddings_data[-num_new_tokens:] = input_embeddings_avg
         output_embeddings_data[-num_new_tokens:] = output_embeddings_avg
 
-@dataclass
-class DataCollatorForCausalLM(object):
-    tokenizer: transformers.PreTrainedTokenizer
-    source_max_len: int
-    target_max_len: int
-    train_on_source: bool
-
-    def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
-        # Extract elements
-        sources = [f"{self.tokenizer.bos_token}{example['input']}" for example in instances]
-        targets = [f"{example['output']}{self.tokenizer.eos_token}" for example in instances]
-        # Tokenize
-        tokenized_sources_with_prompt = self.tokenizer(
-            sources,
-            max_length=self.source_max_len,
-            truncation=True,
-            add_special_tokens=False,
-        )
-        tokenized_targets = self.tokenizer(
-            targets,
-            max_length=self.target_max_len,
-            truncation=True,
-            add_special_tokens=False,
-        )
-        # Build the input and labels for causal LM
-        input_ids = []
-        labels = []
-        for tokenized_source, tokenized_target in zip(
-            tokenized_sources_with_prompt['input_ids'],
-            tokenized_targets['input_ids']
-        ):
-            
-            input_ids.append(torch.tensor(tokenized_source + tokenized_target))
-            if not self.train_on_source:
-                labels.append(
-                    torch.tensor([IGNORE_INDEX for _ in range(len(tokenized_source))] + copy.deepcopy(tokenized_target))
-                )
-            else:
-                labels.append(torch.tensor(copy.deepcopy(tokenized_source + tokenized_target)))
-        # Apply padding
-        input_ids = pad_sequence(input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id)
-        labels = pad_sequence(labels, batch_first=True, padding_value=IGNORE_INDEX)
-        data_dict = {
-            'input_ids': input_ids,
-            'attention_mask':input_ids.ne(self.tokenizer.pad_token_id),
-        }
-        if labels is not None:
-            data_dict['labels'] = labels
-        return data_dict
 
 def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
     with open(args.cf, "r") as cf:
@@ -403,12 +351,8 @@ def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
         #if args.group_by_length:
         #    train_dataset = train_dataset.map(lambda x: {'length': len(x['input']) + len(x['output'])})
 
-    data_collator = DataCollatorForCausalLM(
-        tokenizer=tokenizer,
-        source_max_len=args.source_max_len,
-        target_max_len=args.target_max_len,
-        train_on_source=args.train_on_source,
-    )
+    data_collator = transformers.DataCollatorForLanguageModeling(tokenizer, mlm=False)
+    
     return dict(
         train_dataset=train_dataset if args.do_train else None,
         data_collator=data_collator
