@@ -347,7 +347,7 @@ def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
     data_collator = transformers.DataCollatorForLanguageModeling(tokenizer, mlm=False)
     
     return dict(
-        train_dataset=train_dataset,
+        train_dataset=dataset,
         data_collator=data_collator
     )
 
