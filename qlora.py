@@ -391,6 +391,8 @@ def train():
     set_seed(args.seed)
 
     data_module = make_data_module(tokenizer=tokenizer, args=args)
+
+    print(training_args)
     
     trainer = transformers.Trainer(
         model=model,
