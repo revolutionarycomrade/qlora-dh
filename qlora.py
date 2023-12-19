@@ -42,33 +42,9 @@ from peft import (
 )
 from peft.tuners.lora import LoraLayer
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
-
-
-def is_ipex_available():
-    def get_major_and_minor_from_version(full_version):
-        return str(version.parse(full_version).major) + "." + str(version.parse(full_version).minor)
-
-    _torch_version = importlib.metadata.version("torch")
-    if importlib.util.find_spec("intel_extension_for_pytorch") is None:
-        return False
-    _ipex_version = "N/A"
-    try:
-        _ipex_version = importlib.metadata.version("intel_extension_for_pytorch")
-    except importlib.metadata.PackageNotFoundError:
-        return False
-    torch_major_and_minor = get_major_and_minor_from_version(_torch_version)
-    ipex_major_and_minor = get_major_and_minor_from_version(_ipex_version)
-    if torch_major_and_minor != ipex_major_and_minor:
-        warnings.warn(
-            f"Intel Extension for PyTorch {ipex_major_and_minor} needs to work with PyTorch {ipex_major_and_minor}.*,"
-            f" but PyTorch {_torch_version} is found. Please switch to the matching version and run again."
-        )
-        return False
-    return True
     
 
-if torch.cuda.is_available():   
-    torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cuda.matmul.allow_tf32 = True
 
 logger = logging.getLogger(__name__)
 
@@ -91,20 +67,10 @@ class ModelArguments:
 
 @dataclass
 class DataArguments:
-    eval_dataset_size: int = field(
-        default=1024, metadata={"help": "Size of validation dataset."}
-    )
     max_train_samples: Optional[int] = field(
         default=None,
         metadata={
             "help": "For debugging purposes or quicker training, truncate the number of training examples to this "
-            "value if set."
-        },
-    )
-    max_eval_samples: Optional[int] = field(
-        default=None,
-        metadata={
-            "help": "For debugging purposes or quicker training, truncate the number of evaluation examples to this "
             "value if set."
         },
     )
@@ -133,30 +99,6 @@ class TrainingArguments(transformers.Seq2SeqTrainingArguments):
     train_on_source: Optional[bool] = field(
         default=False,
         metadata={"help": "Whether to train on the input in addition to the target text."}
-    )
-    mmlu_split: Optional[str] = field(
-        default='eval',
-        metadata={"help": "The MMLU split to run on"}
-    )
-    mmlu_dataset: Optional[str] = field(
-        default='mmlu-fs',
-        metadata={"help": "MMLU dataset to use: options are `mmlu-zs` for zero-shot or `mmlu-fs` for few shot."}
-    )
-    do_mmlu_eval: Optional[bool] = field(
-        default=False,
-        metadata={"help": "Whether to run the MMLU evaluation."}
-    )
-    max_mmlu_samples: Optional[int] = field(
-        default=None,
-        metadata={"help": "If set, only evaluates on `max_mmlu_samples` of the MMMLU dataset."}
-    )
-    mmlu_source_max_len: int = field(
-        default=2048,
-        metadata={"help": "Maximum source sequence length for mmlu."}
-    )
-    full_finetune: bool = field(
-        default=False,
-        metadata={"help": "Finetune the entire model without adapters."}
     )
     adam8bit: bool = field(
         default=False,
@@ -287,11 +229,7 @@ class SavePeftModelCallback(transformers.TrainerCallback):
         self.save_model(args, state, kwargs)
 
 def get_accelerate_model(args, checkpoint_dir):
-
-    if torch.cuda.is_available():
-        n_gpus = torch.cuda.device_count()
-    if is_ipex_available() and torch.xpu.is_available():
-        n_gpus = torch.xpu.device_count()
+    n_gpus = torch.cuda.device_count()
         
     max_memory = f'{args.max_memory_MB}MB'
     max_memory = {i: max_memory for i in range(n_gpus)}
@@ -716,72 +654,7 @@ def train():
         **{k:v for k,v in data_module.items() if k != 'predict_dataset'},
     )
 
-    # Callbacks
-    if not args.full_finetune:
-        trainer.add_callback(SavePeftModelCallback)
-    if args.do_mmlu_eval:
-        if args.mmlu_dataset == 'mmlu-zs':
-            mmlu_dataset = load_dataset("json", data_files={
-                'eval': 'data/mmlu/zero_shot_mmlu_val.json',
-                'test': 'data/mmlu/zero_shot_mmlu_test.json',
-            })
-            mmlu_dataset = mmlu_dataset.remove_columns('subject')
-        # MMLU Five-shot (Eval/Test only)
-        elif args.mmlu_dataset == 'mmlu' or args.mmlu_dataset == 'mmlu-fs':
-            mmlu_dataset = load_dataset("json", data_files={
-                'eval': 'data/mmlu/five_shot_mmlu_val.json',
-                'test': 'data/mmlu/five_shot_mmlu_test.json',
-            })
-            # mmlu_dataset = mmlu_dataset.remove_columns('subject')
-        mmlu_dataset = mmlu_dataset[args.mmlu_split]
-        if args.max_mmlu_samples is not None:
-            mmlu_dataset = mmlu_dataset.select(range(args.max_mmlu_samples))
-        abcd_idx = [
-            tokenizer("A", add_special_tokens=False).input_ids[0],
-            tokenizer("B", add_special_tokens=False).input_ids[0],
-            tokenizer("C", add_special_tokens=False).input_ids[0],
-            tokenizer("D", add_special_tokens=False).input_ids[0],
-        ]
-        accuracy = evaluate.load("accuracy")
-        class MMLUEvalCallback(transformers.TrainerCallback):
-            def on_evaluate(self, args, state, control, model, **kwargs):
-                data_loader = trainer.get_eval_dataloader(mmlu_dataset)
-                source_max_len = trainer.data_collator.source_max_len
-                trainer.data_collator.source_max_len = args.mmlu_source_max_len
-                trainer.model.eval()
-                preds, refs = [], []
-                loss_mmlu = 0
-                for batch in tqdm(data_loader, total=len(data_loader)):
-                    (loss, logits, labels) = trainer.prediction_step(trainer.model,batch,prediction_loss_only=False,)
-                    # There are two tokens, the output, and eos token.
-                    for i, logit in enumerate(logits):
-                        label_non_zero_id = (batch['labels'][i] != -100).nonzero()[0][0]
-                        logit_abcd = logit[label_non_zero_id-1][abcd_idx]
-                        preds.append(torch.argmax(logit_abcd).item())
-                    labels = labels[labels != IGNORE_INDEX].view(-1, 2)[:,0]
-                    refs += [abcd_idx.index(label) for label in labels.tolist()]
-                    loss_mmlu += loss.item()
-                # Extract results by subject.
-                results = {'mmlu_loss':loss_mmlu/len(data_loader)}
-                subject = mmlu_dataset['subject']
-                subjects = {s:{'refs':[], 'preds':[]} for s in set(subject)}
-                for s,p,r in zip(subject, preds, refs):
-                    subjects[s]['preds'].append(p)
-                    subjects[s]['refs'].append(r)
-                subject_scores = []
-                for subject in subjects:
-                    subject_score = accuracy.compute(
-                        references=subjects[subject]['refs'],
-                        predictions=subjects[subject]['preds']
-                    )['accuracy']
-                    results[f'mmlu_{args.mmlu_split}_accuracy_{subject}'] = subject_score
-                    subject_scores.append(subject_score)
-                results[f'mmlu_{args.mmlu_split}_accuracy'] = np.mean(subject_scores)
-                trainer.log(results)
-                trainer.data_collator.source_max_len = source_max_len
-
-        trainer.add_callback(MMLUEvalCallback)
-
+   
     # Verifying the datatypes and parameter counts before training.
     print_trainable_parameters(args, model)
     dtypes = {}
@@ -806,13 +679,6 @@ def train():
         trainer.save_metrics("train", metrics)
         trainer.save_state()
         all_metrics.update(metrics)
-    # Evaluation
-    if args.do_eval:
-        logger.info("*** Evaluate ***")
-        metrics = trainer.evaluate(metric_key_prefix="eval")
-        trainer.log_metrics("eval", metrics)
-        trainer.save_metrics("eval", metrics)
-        all_metrics.update(metrics)
     # Prediction
     if args.do_predict:
         logger.info("*** Predict ***")
@@ -833,9 +699,8 @@ def train():
         trainer.save_metrics("predict", prediction_metrics)
         all_metrics.update(prediction_metrics)
 
-    if (args.do_train or args.do_eval or args.do_predict):
-        with open(os.path.join(args.output_dir, "metrics.json"), "w") as fout:
-            fout.write(json.dumps(all_metrics))
+    with open(os.path.join(args.output_dir, "metrics.json"), "w") as fout:
+        fout.write(json.dumps(all_metrics))
 
 if __name__ == "__main__":
     train()
