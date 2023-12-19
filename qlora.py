@@ -155,37 +155,6 @@ class TrainingArguments(transformers.Seq2SeqTrainingArguments):
     save_steps: int = field(default=250, metadata={"help": 'How often to save a model'})
     save_total_limit: int = field(default=40, metadata={"help": 'How many checkpoints to save before the oldest is overwritten'})
 
-@dataclass
-class GenerationArguments:
-    # For more hyperparameters check:
-    # https://huggingface.co/docs/transformers/main_classes/text_generation#transformers.GenerationConfig
-    # Length arguments
-    max_new_tokens: Optional[int] = field(
-        default=256,
-        metadata={"help": "Maximum number of new tokens to be generated in evaluation or prediction loops"
-                          "if predict_with_generate is set."}
-    )
-    min_new_tokens : Optional[int] = field(
-        default=None,
-        metadata={"help": "Minimum number of new tokens to generate."}
-    )
-
-    # Generation strategy
-    do_sample: Optional[bool] = field(default=False)
-    num_beams: Optional[int] = field(default=1)
-    num_beam_groups: Optional[int] = field(default=1)
-    penalty_alpha: Optional[float] = field(default=None)
-    use_cache: Optional[bool] = field(default=True)
-
-    # Hyperparameters for logit manipulation
-    temperature: Optional[float] = field(default=1.0)
-    top_k: Optional[int] = field(default=50)
-    top_p: Optional[float] = field(default=1.0)
-    typical_p: Optional[float] = field(default=1.0)
-    diversity_penalty: Optional[float] = field(default=0.0)
-    repetition_penalty: Optional[float] = field(default=1.0)
-    length_penalty: Optional[float] = field(default=1.0)
-    no_repeat_ngram_size: Optional[int] = field(default=0)
 
 def find_all_linear_names(args, model):
     cls = bnb.nn.Linear4bit if args.bits == 4 else (bnb.nn.Linear8bitLt if args.bits == 8 else torch.nn.Linear)
@@ -240,9 +209,6 @@ def get_accelerate_model(args, checkpoint_dir):
         local_rank = int(os.environ.get('LOCAL_RANK', '0'))
         device_map = {'': local_rank}
         max_memory = {'': max_memory[local_rank]}
-
-
-    if args.full_finetune: assert args.bits in [16, 32]
 
     print(f'loading base model {args.model_name_or_path}...')
     compute_dtype = (torch.float16 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32))
@@ -311,25 +277,23 @@ def get_accelerate_model(args, checkpoint_dir):
                 ),
         })
     
-    if not args.full_finetune:
-        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=args.gradient_checkpointing)
+    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=args.gradient_checkpointing)
 
-    if not args.full_finetune:
-        if checkpoint_dir is not None:
-            print("Loading adapters from checkpoint.")
-            model = PeftModel.from_pretrained(model, join(checkpoint_dir, 'adapter_model'), is_trainable=True)
-        else:
-            print(f'adding LoRA modules...')
-            modules = find_all_linear_names(args, model)
-            config = LoraConfig(
-                r=args.lora_r,
-                lora_alpha=args.lora_alpha,
-                target_modules=modules,
-                lora_dropout=args.lora_dropout,
-                bias="none",
-                task_type="CAUSAL_LM",
-            )
-            model = get_peft_model(model, config)
+    if checkpoint_dir is not None:
+        print("Loading adapters from checkpoint.")
+        model = PeftModel.from_pretrained(model, join(checkpoint_dir, 'adapter_model'), is_trainable=True)
+    else:
+        print(f'adding LoRA modules...')
+        modules = find_all_linear_names(args, model)
+        config = LoraConfig(
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            target_modules=modules,
+            lora_dropout=args.lora_dropout,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        model = get_peft_model(model, config)
 
     for name, module in model.named_modules():
         if isinstance(module, LoraLayer):
@@ -388,7 +352,6 @@ class DataCollatorForCausalLM(object):
     source_max_len: int
     target_max_len: int
     train_on_source: bool
-    predict_with_generate: bool
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         # Extract elements
@@ -414,16 +377,14 @@ class DataCollatorForCausalLM(object):
             tokenized_sources_with_prompt['input_ids'],
             tokenized_targets['input_ids']
         ):
-            if not self.predict_with_generate:
-                input_ids.append(torch.tensor(tokenized_source + tokenized_target))
-                if not self.train_on_source:
-                    labels.append(
-                        torch.tensor([IGNORE_INDEX for _ in range(len(tokenized_source))] + copy.deepcopy(tokenized_target))
-                    )
-                else:
-                    labels.append(torch.tensor(copy.deepcopy(tokenized_source + tokenized_target)))
+            
+            input_ids.append(torch.tensor(tokenized_source + tokenized_target))
+            if not self.train_on_source:
+                labels.append(
+                    torch.tensor([IGNORE_INDEX for _ in range(len(tokenized_source))] + copy.deepcopy(tokenized_target))
+                )
             else:
-                input_ids.append(torch.tensor(tokenized_source))
+                labels.append(torch.tensor(copy.deepcopy(tokenized_source + tokenized_target)))
         # Apply padding
         input_ids = pad_sequence(input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id)
         labels = pad_sequence(labels, batch_first=True, padding_value=IGNORE_INDEX) if not self.predict_with_generate else None
@@ -574,20 +535,6 @@ def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
     dataset = load_data(args.dataset)
     dataset = format_dataset(dataset, args.dataset_format)
 
-    # Split train/eval, reduce size
-    if args.do_eval or args.do_predict:
-        if 'eval' in dataset:
-            eval_dataset = dataset['eval']
-        else:
-            print('Splitting train dataset in train and validation according to `eval_dataset_size`')
-            dataset = dataset["train"].train_test_split(
-                test_size=args.eval_dataset_size, shuffle=True, seed=42
-            )
-            eval_dataset = dataset['test']
-        if args.max_eval_samples is not None and len(eval_dataset) > args.max_eval_samples:
-            eval_dataset = eval_dataset.select(range(args.max_eval_samples))
-        if args.group_by_length:
-            eval_dataset = eval_dataset.map(lambda x: {'length': len(x['input']) + len(x['output'])})
     if args.do_train:
         train_dataset = dataset['train']
         if args.max_train_samples is not None and len(train_dataset) > args.max_train_samples:
@@ -600,12 +547,9 @@ def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
         source_max_len=args.source_max_len,
         target_max_len=args.target_max_len,
         train_on_source=args.train_on_source,
-        predict_with_generate=args.predict_with_generate,
     )
     return dict(
         train_dataset=train_dataset if args.do_train else None,
-        eval_dataset=eval_dataset if args.do_eval else None,
-        predict_dataset=eval_dataset if args.do_predict else None,
         data_collator=data_collator
     )
 
@@ -629,7 +573,6 @@ def train():
     ))
     model_args, data_args, training_args, generation_args, extra_args = \
         hfparser.parse_args_into_dataclasses(return_remaining_strings=True)
-    training_args.generation_config = transformers.GenerationConfig(**vars(generation_args))
     args = argparse.Namespace(
         **vars(model_args), **vars(data_args), **vars(training_args)
     )
@@ -679,25 +622,7 @@ def train():
         trainer.save_metrics("train", metrics)
         trainer.save_state()
         all_metrics.update(metrics)
-    # Prediction
-    if args.do_predict:
-        logger.info("*** Predict ***")
-        prediction_output = trainer.predict(test_dataset=data_module['predict_dataset'],metric_key_prefix="predict")
-        prediction_metrics = prediction_output.metrics
-        predictions = prediction_output.predictions
-        predictions = np.where(predictions != -100, predictions, tokenizer.pad_token_id)
-        predictions = tokenizer.batch_decode(
-            predictions, skip_special_tokens=True, clean_up_tokenization_spaces=True
-        )
-        with open(os.path.join(args.output_dir, 'predictions.jsonl'), 'w') as fout:
-            for i, example in enumerate(data_module['predict_dataset']):
-                example['prediction_with_input'] = predictions[i].strip()
-                example['prediction'] = predictions[i].replace(example['input'], '').strip()
-                fout.write(json.dumps(example) + '\n')
-        print(prediction_metrics)
-        trainer.log_metrics("predict", prediction_metrics)
-        trainer.save_metrics("predict", prediction_metrics)
-        all_metrics.update(prediction_metrics)
+    
 
     with open(os.path.join(args.output_dir, "metrics.json"), "w") as fout:
         fout.write(json.dumps(all_metrics))
