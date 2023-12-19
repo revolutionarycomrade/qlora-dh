@@ -1,8 +1,6 @@
 from datasets import load_dataset
 from datasets.dataset_dict import DatasetDict
 
-from data_processor.DataProcessor import DataProcessor
-
 
 class VicunaDataProcessor(DataProcessor):
     def __init__(self, config, tokenizer):
