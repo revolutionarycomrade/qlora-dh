@@ -136,6 +136,7 @@ class TrainingArguments(transformers.Seq2SeqTrainingArguments):
         default='none',
         metadata={"help": "To use wandb or something else for reporting."}
     )
+    config: str = field(default='', metadata={"help": '.'})
     output_dir: str = field(default='./output', metadata={"help": 'The output dir for logs and checkpoints'})
     optim: str = field(default='paged_adamw_32bit', metadata={"help": 'The optimizer to be used'})
     per_device_train_batch_size: int = field(default=1, metadata={"help": 'The training batch size per GPU. Increase for better speed.'})
@@ -438,8 +439,8 @@ def local_dataset(dataset_name):
     return split_dataset
 
 def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
-    # Load dataset.
-    dataset = VicunaDataProcessor.get_data(tokenizer) 
+    data_processor = VicunaDataProcessor(args.config, tokenizer)
+    dataset = data_processor.get_data() 
 
     if args.do_train:
         train_dataset = dataset['train']
