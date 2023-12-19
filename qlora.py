@@ -345,6 +345,10 @@ def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
     dataset = data_processor.get_data() 
 
     data_collator = transformers.DataCollatorForLanguageModeling(tokenizer, mlm=False)
+
+    print("Final training data:")
+    for i in range(5):
+        print(data["train"][i])
     
     return dict(
         train_dataset=dataset["train"],
