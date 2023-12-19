@@ -392,7 +392,7 @@ def train():
 
     data_module = make_data_module(tokenizer=tokenizer, args=args)
     
-    trainer = Seq2SeqTrainer(
+    trainer = transformers.Trainer(
         model=model,
         tokenizer=tokenizer,
         args=training_args,
