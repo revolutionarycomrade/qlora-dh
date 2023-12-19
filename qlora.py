@@ -43,6 +43,7 @@ from peft.tuners.lora import LoraLayer
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 
 from VicunaDataProcessor import VicunaDataProcessor
+import yaml
 
 torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -389,7 +390,10 @@ class DataCollatorForCausalLM(object):
         return data_dict
 
 def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
-    data_processor = VicunaDataProcessor(args.cf, tokenizer)
+    with open(args.cf, "r") as cf:
+        config = yaml.load(cf)
+    
+    data_processor = VicunaDataProcessor(config, tokenizer)
     dataset = data_processor.get_data() 
 
     if args.do_train:
