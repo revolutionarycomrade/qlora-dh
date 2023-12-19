@@ -22,6 +22,7 @@ class VicunaDataProcessor(DataProcessor):
                 self.tokenizer.eos_token),
             max_length=context_window,
             truncation=True,
+            padding=True,
         ))
         return data
 
