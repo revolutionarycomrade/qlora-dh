@@ -153,6 +153,7 @@ class TrainingArguments(transformers.Seq2SeqTrainingArguments):
     save_steps: int = field(default=250, metadata={"help": 'How often to save a model'})
     save_total_limit: int = field(default=40, metadata={"help": 'How many checkpoints to save before the oldest is overwritten'})
     use_flash_attention_2: bool = field(default=False, metadata={"help": "Use flash attention 2 (native HF method)"})
+    deepspeed: str = field(default=None, metadata={"help": "deepspeed configuration path"})
 
 
 def find_all_linear_names(args, model):
@@ -178,7 +179,16 @@ class SavePeftModelCallback(transformers.TrainerCallback):
             checkpoint_folder = os.path.join(args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{state.global_step}")
 
         peft_model_path = os.path.join(checkpoint_folder, "adapter_model")
-        kwargs["model"].save_pretrained(peft_model_path)
+
+        if getattr(self.trainer, "deepspeed"):
+            self.trainer.accelerator.wait_for_everyone()
+            state_dict = self.trainer.accelerator.get_state_dict(self.trainer.deepspeed)
+            unwrapped_model = self.trainer.accelerator.unwrap_model(self.trainer.deepspeed)
+            if self.trainer.accelerator.is_main_process:
+                unwrapped_model.save_pretrained(peft_model_path, state_dict=state_dict, safe_serialization=True)
+            self.trainer.accelerator.wait_for_everyone()
+        else:
+            kwargs["model"].save_pretrained(peft_model_path, safe_serialization=True)
 
         pytorch_model_path = os.path.join(checkpoint_folder, "pytorch_model.bin")
         if os.path.exists(pytorch_model_path):
@@ -217,8 +227,8 @@ def get_accelerate_model(args, checkpoint_dir):
         cache_dir=args.cache_dir,
         load_in_4bit=args.bits == 4,
         load_in_8bit=args.bits == 8,
-        device_map=device_map,
-        max_memory=max_memory,
+        device_map=device_map if not args.deepspeed else None,
+        max_memory=max_memory if not args.deepspeed else None,
         quantization_config=BitsAndBytesConfig(
             load_in_4bit=args.bits == 4,
             load_in_8bit=args.bits == 8,
@@ -350,9 +360,9 @@ def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
 
     dataset["train"] = dataset["train"].remove_columns("conversations")
 
-    print("Final training data:")
-    for i in range(5):
-        print(dataset["train"][i])
+    #print("Final training data:")
+    #for i in range(5):
+    #    print(dataset["train"][i])
     
     return dict(
         train_dataset=dataset["train"],
@@ -435,6 +445,19 @@ def train():
 
     with open(os.path.join(args.output_dir, "metrics.json"), "w") as fout:
         fout.write(json.dumps(all_metrics))
+
+    if args.deepspeed:
+        trainer.accelerator.wait_for_everyone()
+        state_dict = trainer.accelerator.get_state_dict(trainer.deepspeed)
+        unwrapped_model = trainer.accelerator.unwrap_model(trainer.deepspeed)
+        if trainer.accelerator.is_main_process:
+            unwrapped_model.save_pretrained(args.final_output_dir, safe_serialization=True, state_dict=state_dict)
+        trainer.accelerator.wait_for_everyone()
+    else:
+        trainer.accelerator.wait_for_everyone()
+        if trainer.accelerator.is_main_process:
+            trainer.model.save_pretrained(args.final_output_dir, safe_serialization=True)
+        trainer.accelerator.wait_for_everyone()
 
 if __name__ == "__main__":
     train()
