@@ -211,7 +211,7 @@ def get_accelerate_model(args, checkpoint_dir):
         
     #max_memory = f'{args.max_memory_MB}MB'
     #max_memory = {i: max_memory for i in range(n_gpus)}
-    max_memory = {0: '24000MB', 1: '24000MB', 2: '22000MB'}
+    max_memory = {0: '24000MB', 1: '24000MB', 2: '24000MB'}
     device_map = "auto"
 
     # if we are in a distributed setting, we need to set the device map and max memory per device
@@ -227,8 +227,8 @@ def get_accelerate_model(args, checkpoint_dir):
         cache_dir=args.cache_dir,
         load_in_4bit=args.bits == 4,
         load_in_8bit=args.bits == 8,
-        device_map=device_map if not args.deepspeed else None,
-        max_memory=max_memory if not args.deepspeed else None,
+        device_map=device_map, # if not args.deepspeed else None,
+        max_memory=max_memory, # if not args.deepspeed else None,
         quantization_config=BitsAndBytesConfig(
             load_in_4bit=args.bits == 4,
             load_in_8bit=args.bits == 8,
@@ -392,7 +392,7 @@ def train():
     args = argparse.Namespace(
         **vars(model_args), **vars(data_args), **vars(training_args)
     )
-    print(args)
+    #print(args)
     
     checkpoint_dir, completed_training = get_last_checkpoint(args.output_dir)
     if completed_training:
