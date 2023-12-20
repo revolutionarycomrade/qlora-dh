@@ -214,7 +214,7 @@ def get_accelerate_model(args, checkpoint_dir):
     #max_memory = f'{args.max_memory_MB}MB'
     #max_memory = {i: max_memory for i in range(n_gpus)}
     max_memory = {0: '24000MB', 1: '24000MB', 2: '24000MB'}
-    device_map = "auto"
+    device_map = "balanced"
 
     # if we are in a distributed setting, we need to set the device map and max memory per device
     if os.environ.get('LOCAL_RANK') is not None:
