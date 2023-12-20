@@ -216,7 +216,7 @@ def get_accelerate_model(args, checkpoint_dir):
     max_memory = {0: '24000MB', 1: '24000MB', 2: '24000MB'}
     device_map = device_map = {
         0: list(range(0, 27)),  # GPU 0 handles layers 0-26
-        1: list(range(27, 54))+["embed_tokens"], # GPU 1 handles layers 27-53
+        1: list(range(27, 54))+["model.embed_tokens.weight"], # GPU 1 handles layers 27-53
         2: list(range(54, 80))+["norm"], # GPU 2 handles layers 54-79
         } #"balanced"
 
