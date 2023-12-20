@@ -152,6 +152,7 @@ class TrainingArguments(transformers.Seq2SeqTrainingArguments):
     save_strategy: str = field(default='steps', metadata={"help": 'When to save checkpoints'})
     save_steps: int = field(default=250, metadata={"help": 'How often to save a model'})
     save_total_limit: int = field(default=40, metadata={"help": 'How many checkpoints to save before the oldest is overwritten'})
+    use_flash_attention_2: bool = field(default=False, metadata={"help": "Use flash attention 2 (native HF method)"})
 
 
 def find_all_linear_names(args, model):
@@ -228,6 +229,7 @@ def get_accelerate_model(args, checkpoint_dir):
         ),
         torch_dtype=(torch.float32 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32)),
         trust_remote_code=args.trust_remote_code,
+        use_flash_attention_2=args.use_flash_attention_2,
         use_auth_token=args.use_auth_token
     )
 
