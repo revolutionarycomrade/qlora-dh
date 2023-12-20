@@ -1,5 +1,5 @@
 {
-   "embed_tokens_weight":0,
+   "model.embed_tokens.weight":0,
    "norm_weight":0,
    "layers_0_input_layernorm_weight":0,
    "layers_0_mlp_down_proj_weight":0,
