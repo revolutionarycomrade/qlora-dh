@@ -391,11 +391,11 @@ def train():
     ))
     model_args, data_args, training_args, extra_args = \
         hfparser.parse_args_into_dataclasses(return_remaining_strings=True)
-    if args.deepspeed:
-        training_args.distributed_state.distributed_type = DistributedType.DEEPSPEED
     args = argparse.Namespace(
         **vars(model_args), **vars(data_args), **vars(training_args)
     )
+    if args.deepspeed:
+        training_args.distributed_state.distributed_type = DistributedType.DEEPSPEED
     #print(args)
     
     checkpoint_dir, completed_training = get_last_checkpoint(args.output_dir)
