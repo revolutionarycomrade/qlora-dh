@@ -213,7 +213,7 @@ def get_accelerate_model(args, checkpoint_dir):
         
     #max_memory = f'{args.max_memory_MB}MB'
     #max_memory = {i: max_memory for i in range(n_gpus)}
-    max_memory = {0: '16000MB', 1: '16500MB', 2: '15000MB'} #only params sizes are considered when allocating
+    max_memory = {0: '17000MB', 1: '17500MB', 2: '15000MB'} #only params sizes are considered when allocating
     device_map = "auto" 
     '''device_map = {
         0: list(range(0, 27)),  # GPU 0 handles layers 0-26
