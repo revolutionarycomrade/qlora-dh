@@ -229,7 +229,7 @@ def get_accelerate_model(args, checkpoint_dir):
         ),
         torch_dtype=(torch.float32 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32)),
         trust_remote_code=args.trust_remote_code,
-        attn_implementation="flash_attention_2" if args.use_flash_attention_2,
+        attn_implementation="flash_attention_2" if args.use_flash_attention_2 else None,
         use_auth_token=args.use_auth_token
     )
 
