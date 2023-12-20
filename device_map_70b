@@ -801,5 +801,5 @@
    "model.layers.79.self_attn.q_proj.weight":2,
    "model.layers.79.self_attn.rotary_emb_inv_freq":2,
    "model.layers.79.self_attn.v_proj.weight":2,
-   "model.lm_head.weight":2
+   "lm_head.weight":2
 }
