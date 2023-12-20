@@ -38,6 +38,8 @@ from peft import (
 from peft.tuners.lora import LoraLayer
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 
+from accelerate.utils import DistributedType
+
 from VicunaDataProcessor import VicunaDataProcessor
 import yaml
 
