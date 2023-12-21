@@ -217,9 +217,9 @@ def get_accelerate_model(args, checkpoint_dir):
     max_memory = {0: '24GiB', 1: '24GiB', 2: '24GiB'} #only params sizes are considered when allocating
     
 
-    with open('device_map-7b', 'r') as file:
+    with open('device_map', 'r') as file:
         file_content = file.read()
-        device_map = "auto" #ast.literal_eval(file_content)
+        device_map = ast.literal_eval(file_content)
     '''device_map = {
         0: list(range(0, 27)),  # GPU 0 handles layers 0-26
         1: list(range(27, 54))+["embed_tokens.weight"], # GPU 1 handles layers 27-53
