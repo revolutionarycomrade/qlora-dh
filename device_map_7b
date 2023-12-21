@@ -1,6 +1,5 @@
 {
    "model.embed_tokens.weight":0,
-   "model.norm.weight":0,
    "model.layers.0.input_layernorm.weight":0,
    "model.layers.0.mlp.down_proj.weight":0,
    "model.layers.0.mlp.gate_proj.weight":0,
@@ -301,6 +300,7 @@
    "model.layers.29.self_attn.q_proj.weight":2,
    "model.layers.29.self_attn.rotary_emb_inv_freq":2,
    "model.layers.29.self_attn.v_proj.weight":2,
+   "lm_head.weight":2,
    "model.layers.30.input_layernorm.weight":2,
    "model.layers.30.mlp.down_proj.weight":2,
    "model.layers.30.mlp.gate_proj.weight":2,
@@ -321,5 +321,5 @@
    "model.layers.31.self_attn.q_proj.weight":2,
    "model.layers.31.self_attn.rotary_emb_inv_freq":2,
    "model.layers.31.self_attn.v_proj.weight":2,
-   "lm_head.weight":2
+   "model.norm.weight":2
 }
